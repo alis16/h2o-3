@@ -459,7 +459,7 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
 
           // Keep track of I - \sum_i v_iv_i' where v_i = eigenvector i
           double[][] ivv_sum = new double[_ncolExp][_ncolExp];
-          for (int i = 0; i < _ncolExp; i++) ivv_sum[i][i] = 1;
+          for (int i = 0; i < _ncolExp; i++) ivv_sum[i][i] = 1; //generate matrix I
 
           // 1b) Initialize singular value \sigma_1 and update u_1 <- Av_1
           if (!_parms._only_v) {
