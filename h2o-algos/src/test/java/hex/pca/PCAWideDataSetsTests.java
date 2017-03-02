@@ -95,7 +95,7 @@ public class PCAWideDataSetsTests extends TestUtil {
 		compare the eigenvalues/vectors from both methods and they should agree.  Dataset contains numerical and
 		categorical columns.  All pca methods are tested.
 		*/
-		@Test public void testWideDataSetsSmallDataNA_GramSVD() throws InterruptedException, ExecutionException {
+		@Test public void testWideDataSetsSmallDataNA() throws InterruptedException, ExecutionException {
 				ActualPCATests.testWideDataSetsSmallDataNA(PCAModel.PCAParameters.Method.GramSVD);	// pca_method=GramSVD
 				ActualPCATests.testWideDataSetsSmallDataNA(PCAModel.PCAParameters.Method.Power);	// pca_method=Power
 				ActualPCATests.testWideDataSetsSmallDataNA(PCAModel.PCAParameters.Method.Randomized);	// pca_method=Randomized

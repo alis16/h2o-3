@@ -137,16 +137,20 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
     SVDModel _model;
 
     // private double[] powerLoop(Gram gram) { return powerLoop(gram, ArrayUtils.gaussianVector(gram.fullN())); }
-    private double[] powerLoop(Gram gram, long seed, SVDModel model) { return powerLoop(gram, ArrayUtils.gaussianVector(gram.fullN(), seed), model); }
-    private double[] powerLoop(Gram gram, double[] vinit, SVDModel model) {
+    private double[] powerLoop(Gram gram, long seed, SVDModel model, double[] randomInitialV, double[] finalV)
+    { randomInitialV = ArrayUtils.gaussianVector(seed, randomInitialV);
+      return powerLoop(gram, randomInitialV, model, finalV);
+    }
+    private double[] powerLoop(Gram gram, double[] v, SVDModel model, double[] vnew) {
       // TODO: What happens if Gram matrix is essentially zero? Numerical inaccuracies in PUBDEV-1161.
-      assert vinit.length == gram.fullN();
+//      assert vinit.length == gram.fullN();
+      assert v.length == gram.fullN();
 
       // Set initial value v_0 to standard normal distribution
       int iters = 0;
       double err = 2 * TOLERANCE;
-      double[] v = vinit.clone();
-      double[] vnew = new double[v.length];
+//      double[] v = vinit.clone();
+//      double[] vnew = new double[v.length];
       int eigIndex = model._output._iterations+1; // we start counting at 1 and not zero.
 
       // Update v_i <- (A'Av_{i-1})/||A'Av_{i-1}|| where A'A = Gram matrix of training frame
@@ -436,6 +440,8 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
           GramTask gtsk = null;
           Gram.OuterGramTask ogtsk = null;
           Gram gram = null;
+          double[] randomInitialV = null; // store random initial eigenvectors
+          double[] finalV = null;         // store eigenvectors obtained from powerLoop
 
           if (_wideDataset) {
             ogtsk = new Gram.OuterGramTask(_job._key, dinfo).doAll(dinfo._adaptedFrame);
@@ -455,7 +461,9 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
           _job.update(1, "Iteration 1 of power method");     // One unit of work
           // 1a) Initialize right singular vector v_1
           model._output._v = new double[_parms._nv][_ncolExp];  // Store V' for ease of use and transpose back at end
-          model._output._v[0] = powerLoop(gram, _parms._seed, model); // get the very first one
+          randomInitialV = new double[_ncolExp];   // allocate memroy for randomInitialV and finalV once, save time
+          finalV = new double[_ncolExp];
+          model._output._v[0] = Arrays.copyOf(powerLoop(gram, _parms._seed, model, randomInitialV, finalV), _ncolExp);
 
           // Keep track of I - \sum_i v_iv_i' where v_i = eigenvector i
           double[][] ivv_sum = new double[_ncolExp][_ncolExp];
@@ -482,7 +490,8 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
             _job.update(1, "Iteration " + String.valueOf(k+1) + " of power method");   // One unit of work
 
             // 2) Iterate x_i <- (A_k'A_k/n)x_{i-1} until convergence and set v_k = x_i/||x_i||
-            model._output._v[k] = powerLoop(gram_update, _parms._seed, model);
+            model._output._v[k] = Arrays.copyOf(powerLoop(gram_update, _parms._seed, model, randomInitialV, finalV),
+                    _ncolExp);
 
             // 3) Residual data A_k = A - \sum_{i=1}^k \sigma_i u_iv_i' = A - \sum_{i=1}^k Av_iv_i' = A(I - \sum_{i=1}^k v_iv_i')
             // 3a) Compute \sigma_k = ||A_{k-1}v_k|| and u_k = A_{k-1}v_k/\sigma_k
@@ -639,6 +648,7 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
     }
 
     @Override protected boolean chunkInit(){
+      // To avoid memory allocation during every iteration.
       _gram = new Gram(_dinfo.fullN(), 0, _ivv.length, 0, false);
       _numRow = _dinfo.newDenseRow(MemoryManager.malloc8d(_ivv.length),0);
       return true;

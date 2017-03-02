@@ -835,11 +835,24 @@ public class ArrayUtils {
   public static double[] gaussianVector(int n, long seed) { return gaussianVector(n, getRNG(seed)); }
   public static double[] gaussianVector(int n, Random random) {
     if(n <= 0) return null;
-    double[] result = new double[n];
+    double[] result = new double[n];  // ToDo: Get rid of this new action.
 
     for(int i = 0; i < n; i++)
       result[i] = random.nextGaussian();
     return result;
+  }
+
+  /** Remove the array allocation in this one */
+  public static double[] gaussianVector(long seed, double[] vseed) {
+    if (vseed == null)
+      return null;
+
+    Random random = getRNG(seed);
+    int arraySize = vseed.length;
+    for (int i=0; i < arraySize; i++) {
+      vseed[i] = random.nextGaussian();
+    }
+    return vseed;
   }
 
   /** Returns number of strings which represents a number. */
