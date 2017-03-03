@@ -158,6 +158,8 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
      * Hyper space description - in this case only dimension and possible values.
      */
     final protected Map<String, Object[]> _hyperParams;
+
+    final protected boolean _model_seed_default;  // true if model parameter seed is set to default value and false otherwise
     /**
      * Cached names of used hyper parameters.
      */
@@ -254,6 +256,28 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
             throw new H2OIllegalArgumentException("Grid search model parameter '" + key + "' is set in both the model parameters and in the hyperparameters map.  This is ambiguous; set it in one place or the other, not both.");
         }
       } // for all keys
+
+      // check model parameter seed value and determine if it is set to default value for random gridsearch
+      if ((search_criteria != null) &&
+              (search_criteria.strategy() == HyperSpaceSearchCriteria.Strategy.RandomDiscrete)) {
+        Object defaultSeedVal = PojoUtils.getFieldValue(defaults, "_seed", PojoUtils.FieldNaming.CONSISTENT);
+        Object actualSeedVal = PojoUtils.getFieldValue(params, "_seed", PojoUtils.FieldNaming.CONSISTENT);
+        long gridSeed = ((HyperSpaceSearchCriteria.RandomDiscreteValueSearchCriteria) search_criteria).seed();
+
+        if ((defaultSeedVal != null) && (actualSeedVal != null)) {
+          if (defaultSeedVal.equals(actualSeedVal) && !defaultSeedVal.equals(gridSeed)) { // param seed = default, gridSeed != default
+            _model_seed_default = true;
+            // set model seed to be search_criteria.seed-1.
+            params._seed = ((HyperSpaceSearchCriteria.RandomDiscreteValueSearchCriteria) search_criteria).seed()-1;
+          } else {
+            _model_seed_default = false;
+          }
+        } else {
+          _model_seed_default = false;
+        }
+      } else {
+        _model_seed_default = false;
+      }
     } // BaseWalker()
 
     @Override
@@ -351,6 +375,15 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
             MP params = getModelParams(commonModelParams, hypers);
             // add max_runtime_secs in search criteria into params if applicable
             if (_search_criteria != null && _search_criteria.strategy() == HyperSpaceSearchCriteria.Strategy.RandomDiscrete) {
+              // increment model seed, since it starts at search_criteria.seed-1,
+              // this will make model seed = search_criteria.seed+(0, 1, 2,..., model number)
+              // ToDo: model seed setting will be different for parallel model building.
+              // ToDo: This implementation only works for sequential model building.
+              if (_model_seed_default) {
+                params._seed += 1;
+              }
+
+              // set max_runtime_secs
               double timeleft = this.time_remaining_secs();
               if (timeleft > 0)  {
                 if (params._max_runtime_secs > 0) {
@@ -360,7 +393,6 @@ public interface HyperSpaceWalker<MP extends Model.Parameters, C extends HyperSp
                 }
               }
             }
-            // We have another model parameters
             return params;
           } else {
             throw new NoSuchElementException("No more elements to explore in hyper-space!");
