@@ -321,9 +321,14 @@ public class ArrayUtils {
   }
 
   public static double[] multArrVec(double[][] ary, double[] nums) {
+    if(ary == null) return null;
+    double[] res = new double[ary.length];
+    return multArrVec(ary, nums, res);
+  }
+
+  public static double[] multArrVec(double[][] ary, double[] nums, double[] res) {
     if(ary == null || nums == null) return null;
     assert ary[0].length == nums.length : "Inner dimensions must match: Got " + ary[0].length + " != " + nums.length;
-    double[] res = new double[ary.length];
     for(int i = 0; i < ary.length; i++)
       res[i] = innerProduct(ary[i], nums);
     return res;

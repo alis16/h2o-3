@@ -21,6 +21,7 @@ import water.fvec.Chunk;
 import water.fvec.Frame;
 import water.fvec.NewChunk;
 import water.fvec.Vec;
+import water.rapids.Rapids;
 import water.util.ArrayUtils;
 import water.util.PrettyPrint;
 import water.util.TwoDimTable;
@@ -95,7 +96,7 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
 
   /*
 		Set value of wideDataset.  Note that this routine is used for test purposes only and is not intended
-		for users but more for developers for setting.
+		for users.
   */
   public void setWideDataset(boolean isWide) {
     _wideDataset = isWide;
@@ -177,8 +178,8 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
       return v;
     }
 
-    private double computeSigmaU(DataInfo dinfo, SVDModel model, int k, double[][] ivv_sum, Vec[] uvecs) {
-      double[] ivv_vk = ArrayUtils.multArrVec(ivv_sum, model._output._v[k]);
+    private double computeSigmaU(DataInfo dinfo, SVDModel model, int k, double[][] ivv_sum, Vec[] uvecs, double[] vresult) {
+      double[] ivv_vk = ArrayUtils.multArrVec(ivv_sum, model._output._v[k], vresult);
       CalcSigmaU ctsk = new CalcSigmaU(_job._key, dinfo, ivv_vk).doAll(Vec.T_NUM, dinfo._adaptedFrame);
       model._output._d[k] = ctsk._sval;
       assert ctsk._nobs == model._output._nobs : "Processed " + ctsk._nobs + " rows but expected " + model._output._nobs;    // Check same number of skipped rows as Gram
@@ -365,7 +366,7 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
     @Override
     public void computeImpl() {
       SVDModel model = null;
-      DataInfo dinfo = null;
+      DataInfo dinfo = null, tinfo = null;
       Frame u = null, qfrm = null;
       Vec[] uvecs = null;
 
@@ -378,7 +379,27 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
         model.delete_and_lock(_job);
 
         // 0) Transform training data and save standardization vectors for use in scoring later
-        dinfo = new DataInfo(_train, _valid, 0, _parms._use_all_factor_levels, _parms._transform, DataInfo.TransformType.NONE, /* skipMissing */ !_parms._impute_missing, /* imputeMissing */ _parms._impute_missing, /* missingBucket */ false, /* weights */ false, /* offset */ false, /* fold */ false, /* intercept */ false);
+        if (!_parms._impute_missing) {    // added warning to user per request from Nidhi
+          _job.warn("_train: Dataset used may contain fewer number of rows due to removal of rows with " +
+                  "NA/missing values.  If this is not desirable, set impute_missing argument in pca call to " +
+                  "TRUE/True/true/... depending on the client language.");
+        }
+
+        if (_wideDataset && (!_parms._impute_missing) && _train.hasNAs()) { // remove NAs rows
+          tinfo = new DataInfo(_train, _valid, 0, _parms._use_all_factor_levels, _parms._transform,
+                  DataInfo.TransformType.NONE, /* skipMissing */ !_parms._impute_missing, /* imputeMissing */
+                  _parms._impute_missing, /* missingBucket */ false, /* weights */ false,
+                    /* offset */ false, /* fold */ false, /* intercept */ false);
+          DKV.put(tinfo._key, tinfo);
+
+          DKV.put(_train._key, _train);
+          _train = Rapids.exec(String.format("(na.omit %s)", _train._key)).getFrame(); // remove NA rows
+          DKV.remove(_train._key);
+        }
+        dinfo = new DataInfo(_train, _valid, 0, _parms._use_all_factor_levels, _parms._transform,
+                DataInfo.TransformType.NONE, /* skipMissing */ !_parms._impute_missing, /* imputeMissing */
+                _parms._impute_missing, /* missingBucket */ false, /* weights */ false,
+                /* offset */ false, /* fold */ false, /* intercept */ false);
         DKV.put(dinfo._key, dinfo);
 
         // Save adapted frame info for scoring later
@@ -440,13 +461,15 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
           GramTask gtsk = null;
           Gram.OuterGramTask ogtsk = null;
           Gram gram = null;
-          double[] randomInitialV = null; // store random initial eigenvectors
+          double[] randomInitialV = null; // store random initial eigenvectors, actually refering to V'
           double[] finalV = null;         // store eigenvectors obtained from powerLoop
+          int eigVecLen = _ncolExp;       // size of one eigenvector
 
           if (_wideDataset) {
             ogtsk = new Gram.OuterGramTask(_job._key, dinfo).doAll(dinfo._adaptedFrame);
             gram = ogtsk._gram;
             model._output._nobs = ogtsk._nobs;
+            eigVecLen = (int) ogtsk._nobs;
           } else {
             gtsk = new GramTask(_job._key, dinfo).doAll(dinfo._adaptedFrame);
             gram = gtsk._gram;   // TODO: This ends up with all NaNs if training data has too many missing values
@@ -454,27 +477,27 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
             model._output._nobs = gtsk._nobs;
           }
 
-          model._output._total_variance = gram.diagSum() * gtsk._nobs / (gtsk._nobs-1);  // Since gram = X'X/nobs, but variance requires nobs-1 in denominator
+          model._output._total_variance = gram.diagSum() * model._output._nobs / (model._output._nobs-1);  // Since gram = X'X/nobs, but variance requires nobs-1 in denominator
           model.update(_job);
 
           // 1) Run one iteration of power method
           _job.update(1, "Iteration 1 of power method");     // One unit of work
           // 1a) Initialize right singular vector v_1
-          model._output._v = new double[_parms._nv][_ncolExp];  // Store V' for ease of use and transpose back at end
-          randomInitialV = new double[_ncolExp];   // allocate memroy for randomInitialV and finalV once, save time
-          finalV = new double[_ncolExp];
-          model._output._v[0] = Arrays.copyOf(powerLoop(gram, _parms._seed, model, randomInitialV, finalV), _ncolExp);
+          model._output._v = new double[_parms._nv][eigVecLen];  // Store V' for ease of use and transpose back at end
+          randomInitialV = new double[eigVecLen];   // allocate memroy for randomInitialV and finalV once, save time
+          finalV = new double[eigVecLen];
+          model._output._v[0] = Arrays.copyOf(powerLoop(gram, _parms._seed, model, randomInitialV, finalV), eigVecLen);
 
           // Keep track of I - \sum_i v_iv_i' where v_i = eigenvector i
-          double[][] ivv_sum = new double[_ncolExp][_ncolExp];
-          for (int i = 0; i < _ncolExp; i++) ivv_sum[i][i] = 1; //generate matrix I
+          double[][] ivv_sum = new double[eigVecLen][eigVecLen];
+          for (int i = 0; i < eigVecLen; i++) ivv_sum[i][i] = 1; //generate matrix I
 
           // 1b) Initialize singular value \sigma_1 and update u_1 <- Av_1
           if (!_parms._only_v) {
             model._output._d = new double[_parms._nv];
             model._output._u_key = Key.make(u_name);
             uvecs = new Vec[_parms._nv];
-            computeSigmaU(dinfo, model, 0, ivv_sum, uvecs);  // Compute first singular value \sigma_1
+            computeSigmaU(dinfo, model, 0, ivv_sum, uvecs, finalV);  // Compute first singular value \sigma_1
           }
           model._output._iterations = 1;
           model.update(_job); // Update model in K/V store
@@ -496,7 +519,7 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
             // 3) Residual data A_k = A - \sum_{i=1}^k \sigma_i u_iv_i' = A - \sum_{i=1}^k Av_iv_i' = A(I - \sum_{i=1}^k v_iv_i')
             // 3a) Compute \sigma_k = ||A_{k-1}v_k|| and u_k = A_{k-1}v_k/\sigma_k
             if (!_parms._only_v)
-              computeSigmaU(dinfo, model, k, ivv_sum, uvecs);
+              computeSigmaU(dinfo, model, k, ivv_sum, uvecs, finalV);
 
             // 3b) Compute Gram of residual A_k'A_k = (I - \sum_{i=1}^k v_jv_j')A'A(I - \sum_{i=1}^k v_jv_j')
             updateIVVSum(ivv_sum, model._output._v[k]);   // Update I - \sum_{i=1}^k v_iv_i' with sum up to current singular value
@@ -551,6 +574,7 @@ public class SVD extends ModelBuilder<SVDModel,SVDModel.SVDParameters,SVDModel.S
       finally {
         if( model != null ) model.unlock(_job);
         if( dinfo != null ) dinfo.remove();
+        if (tinfo != null) tinfo.remove();
         if( u != null & !_parms._keep_u ) u.delete();
         if( qfrm != null ) qfrm.delete();
 
